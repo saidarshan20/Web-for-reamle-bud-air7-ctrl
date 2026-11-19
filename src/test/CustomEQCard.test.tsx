@@ -1,0 +1,51 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import { CustomEQCard } from '@/components/CustomEQCard';
+import type { CustomPreset } from '@/lib/air7';
+afterEach(cleanup);
+const preset:CustomPreset={id:7,selected:1,min:-6,max:6,name:[67,117,115,116,111,109,49],gains:[0,0,0,0,0,0],frequencies:[62,250,1000,4000,8000,16000]};
+it('keeps edits local until explicit save and retains a failed draft',async()=>{
+  const save=vi.fn(async()=>false), select=vi.fn(async()=>true);
+  render(<CustomEQCard disabled={false} ready presets={[preset]} activePreset={7} onSavePreset={save} onSelectPreset={select} onDeletePreset={vi.fn()}/>);
+  fireEvent.change(screen.getByLabelText('Preset name'),{target:{value:'Evening'}});
+  fireEvent.change(screen.getByLabelText('Custom EQ band 1'),{target:{value:'3'}});
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByRole('button',{name:'New preset'})).toBeDisabled();
+  fireEvent.click(screen.getByRole('button',{name:'Save preset'}));
+  await waitFor(()=>expect(save).toHaveBeenCalledWith(7,'Evening',[3,0,0,0,0,0]));
+  expect(screen.getByLabelText('Preset name')).toHaveValue('Evening');
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}));
+  expect(screen.getByLabelText('Preset name')).toHaveValue('Custom1');
+});
+it('allows creating the first named preset after an empty list is confirmed',async()=>{
+  const save=vi.fn(async()=>true);
+  render(<CustomEQCard disabled={false} ready presets={[]} activePreset={0} onSavePreset={save} onSelectPreset={vi.fn()} onDeletePreset={vi.fn()}/>);
+  expect(screen.getByLabelText('Custom EQ band 1')).toBeEnabled();
+  expect(screen.getByRole('button',{name:'Create preset'})).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Preset name'),{target:{value:'Travel'}});
+  fireEvent.click(screen.getByRole('button',{name:'Create preset'}));
+  await waitFor(()=>expect(save).toHaveBeenCalledWith(null,'Travel',[0,0,0,0,0,0]));
+});
+it('edits a non-active preset from its menu without applying it before Save',async()=>{
+  const save=vi.fn(async()=>true),select=vi.fn(async()=>true);
+  const other={...preset,id:8,name:[79,116,104,101,114],gains:[2,2,2,2,2,2],selected:0};
+  render(<CustomEQCard disabled={false} ready presets={[preset,other]} activePreset={7} onSavePreset={save} onSelectPreset={select} onDeletePreset={vi.fn()}/>);
+  fireEvent.keyDown(screen.getByRole('button',{name:'Manage preset Other'}),{key:'ArrowDown'});
+  fireEvent.click(await screen.findByRole('menuitem',{name:'Rename'}));
+  expect(screen.getByLabelText('Preset name')).toHaveValue('Other');
+  expect(select).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText('Preset name'),{target:{value:'Renamed'}});
+  fireEvent.click(screen.getByRole('button',{name:'Save preset'}));
+  await waitFor(()=>expect(save).toHaveBeenCalledWith(8,'Renamed',[2,2,2,2,2,2]));
+});
+it('requires delete confirmation and retains it on a failed operation',async()=>{
+  const remove=vi.fn(async()=>false);
+  render(<CustomEQCard disabled={false} ready presets={[preset]} activePreset={7} onSavePreset={vi.fn()} onSelectPreset={vi.fn()} onDeletePreset={remove}/>);
+  fireEvent.keyDown(screen.getByRole('button',{name:'Manage preset Custom1'}),{key:'ArrowDown'});
+  fireEvent.click(await screen.findByRole('menuitem',{name:'Delete'}));
+  expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+  expect(remove).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'Delete preset'}));
+  await waitFor(()=>expect(remove).toHaveBeenCalledWith(preset));
+  expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+});
