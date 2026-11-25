@@ -14,7 +14,8 @@ This project is a customization of **[Realme Web Control by DuGanTaDa](https://g
 - **Named custom EQ:** create, select, edit, rename and delete six-band presets saved on the earbuds. Use the **⋯ menu** beside a preset for management actions.
 - **Button settings:** separate left/right Double-tap, Triple-tap and Touch and hold assignments, using the standard Air 7 action menus.
 - **Device features:** Game mode, High-definition sound, Spatial Audio, In-Ear Detection, Enhanced Voices, Wind noise reduction and the Dynamic Bass switch when the device reports support.
-- **Battery indicators**, connection recovery and a **Serial Log** for troubleshooting.
+- **Battery percentages** for the left bud, right bud and case, with charging indicators, automatic updates and manual refresh.
+- Connection recovery and a **Serial Log** for troubleshooting.
 - **Responsive layout** with the original Realme BT styling.
 
 Controls depend on the connected device's advertised commands and reported state. Changes are confirmed through Bluetooth acknowledgements and state read-back; a successful write alone is not treated as proof that a setting applied.
@@ -47,6 +48,8 @@ Open the local URL printed by Vite.
 4. Wait for the app to identify the device and load its settings.
 
 The browser may list the same earbuds more than once because they expose different Bluetooth services. These UUIDs are service identifiers, not earbud serial numbers. The `0000079a` entry is the preferred vendor control service.
+
+The battery strip appears after connecting. Open the case with at least one bud inside to let the earbuds report the case level. Availability depends on the firmware; unreported levels show `—`, never an invented percentage. The page listens for battery updates, rechecks after lid/wear events, and refreshes every 30 seconds while visible and idle. You can also click **Refresh**. A fresh query clears parts it no longer reports, and disconnecting clears all readings.
 
 ### Manage custom EQ presets
 

@@ -8,6 +8,7 @@ vi.mock('sonner',()=>({toast:{success:vi.fn(),error:vi.fn()}}));
 function device(model=[0x12,0x48,0x06],eqSupported=true) {
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let anc=32, rejectANC=false, ignoreANC=false, wrongSeq=false;
+  let battery = [0,3,1,90,2,80,3,70];
   const hold=8;
   let custom:CustomPreset[]=[];
   let activeEQ=0, ignoreCustom=false;
@@ -24,7 +25,7 @@ function device(model=[0x12,0x48,0x06],eqSupported=true) {
           case 0x0103: respond(packet,[0,...model]); break;
           case 0x0200: respond(packet,[0,3,1,2,3]); break;
           case 0x0205: respond(packet,[1,3,1,0,2,0,3,0]); break;
-          case 0x0106: respond(packet,[0,3,1,90,2,80,3,70]); break;
+          case 0x0106: respond(packet,battery); break;
           case 0x010c: respond(packet,[0,1,1,anc]); break;
           case 0x010d: respond(packet,[0,2,6,0,0x18,0]); break;
           case 0x010f: respond(packet,[0,activeEQ]); break;
@@ -49,7 +50,7 @@ function device(model=[0x12,0x48,0x06],eqSupported=true) {
     open:vi.fn(async()=>{}),close:vi.fn(async()=>{}),
   };
   Object.defineProperty(navigator,'serial',{value:{requestPort:async()=>port},configurable:true});
-  return { writes, ignoreCustom:()=>{ignoreCustom=true;}, externalRename:()=>{custom[0].name=[88];}, reject:()=>{rejectANC=true;}, ignore:()=>{ignoreANC=true;}, wrong:()=>{wrongSeq=true;}, push:(p:number[])=>controller.enqueue(encodePacket(0x0204,255,p)) };
+  return { writes, battery:(payload:number[])=>{battery=payload;}, drop:()=>controller.close(), ignoreCustom:()=>{ignoreCustom=true;}, externalRename:()=>{custom[0].name=[88];}, reject:()=>{rejectANC=true;}, ignore:()=>{ignoreANC=true;}, wrong:()=>{wrongSeq=true;}, push:(p:number[])=>controller.enqueue(encodePacket(0x0204,255,p)) };
 }
 afterEach(cleanup);
 async function connect() {
@@ -58,6 +59,46 @@ async function connect() {
   return hook;
 }
 describe('Web Serial confirmed state',()=>{
+  it('reads the newly available case after a lid/wear push and clears missing readings on refresh',async()=>{
+    const mock=device(); const {result}=await connect();
+    mock.battery([0,3,1,90,2,0x80|80,3,65]);
+    await act(async()=>{mock.push([2,2,1,3,2,4]);});
+    await waitFor(()=>expect(result.current.state.battery.case).toBe(65));
+    expect(result.current.state.charging.right).toBe(1);
+    mock.battery([0,1,1,85]);
+    await act(async()=>{await result.current.refreshBattery();});
+    expect(result.current.state.battery).toEqual({left:85,right:-1,case:-1});
+    expect(result.current.state.charging).toEqual({left:0,right:-1,case:-1});
+  });
+  it('polls while connected, pauses when hidden and stops after unmount',async()=>{
+    const mock=device();
+    vi.useFakeTimers();
+    try {
+      const {result,unmount}=await connect();
+      mock.battery([0,3,1,85,2,75,3,60]);
+      await act(async()=>{await vi.advanceTimersByTimeAsync(30_000);});
+      expect(result.current.state.battery).toEqual({left:85,right:75,case:60});
+      const reads=()=>mock.writes.filter(p=>p.command===0x0106).length;
+      const count=reads();
+      const visibility=vi.spyOn(document,'visibilityState','get').mockReturnValue('hidden');
+      await act(async()=>{await vi.advanceTimersByTimeAsync(30_000);});
+      expect(reads()).toBe(count);
+      visibility.mockReturnValue('visible');
+      await act(async()=>{document.dispatchEvent(new Event('visibilitychange'));});
+      expect(reads()).toBe(count+1);
+      visibility.mockRestore();
+      unmount();
+      await act(async()=>{await vi.advanceTimersByTimeAsync(30_000);});
+      expect(reads()).toBe(count+1);
+    } finally { vi.restoreAllMocks(); vi.useRealTimers(); }
+  });
+  it('clears all battery values when the serial link drops',async()=>{
+    const mock=device(); const {result}=await connect();
+    await act(async()=>{mock.drop();});
+    expect(result.current.state.connected).toBe(false);
+    expect(result.current.state.battery).toEqual({left:-1,right:-1,case:-1});
+    expect(result.current.state.charging).toEqual({left:-1,right:-1,case:-1});
+  });
   it('deletes a preset and preserves the others after firmware renumbers their IDs',async()=>{
     const mock=device(); const {result}=await connect();
     await act(async()=>{await result.current.saveNamedCustomEQ(null,'One',[0,0,0,0,0,0]);});

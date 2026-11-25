@@ -20,6 +20,7 @@ test.beforeEach(async ({ page }) => {
       const length=7+data.length;
       controller.enqueue(new Uint8Array([170,length,0,0,command&255,command>>8,seq,data.length,0,...data]));
     };
+    window.addEventListener('test-battery-push', event => reply(0x0204,255,(event as CustomEvent<number[]>).detail));
     const port={
       open: async()=>{}, close:async()=>{},
       readable: new ReadableStream<Uint8Array>({start(c){controller=c;}}),
@@ -64,6 +65,9 @@ for(const width of [320,390,768,1440]) {
     await page.screenshot({path:`test-results/air7-landing-${width}.png`});
     await page.getByRole('button',{name:/connect/i}).click();
     await expect(page.getByRole('heading',{name:'Noise cancellation strength'})).toBeVisible();
+    await expect(page.getByRole('group',{name:'Left bud battery',exact:true})).toContainText('90%');
+    await expect(page.getByRole('group',{name:'Right bud battery',exact:true})).toContainText('85%');
+    await expect(page.getByRole('group',{name:'Case battery',exact:true})).toContainText('70%');
     await expect.poll(async()=>page.locator('img').evaluateAll(nodes=>nodes.every(n=>n.complete && n.naturalWidth>0))).toBe(true);
     await expect(page.locator('#touch-1-hold')).toHaveText('Switch noise control modes');
     await expect(page.locator('#touch-2-hold')).toHaveText('Switch noise control modes');
@@ -129,3 +133,24 @@ for(const width of [320,390,768,1440]) {
     await page.screenshot({path:`test-results/air7-${width}.png`,fullPage:true});
   });
 }
+
+test('battery display follows charging, case availability and manual refresh',async({page})=>{
+  await page.goto('/');
+  await page.getByRole('button',{name:/connect/i}).click();
+  const left=page.getByRole('group',{name:'Left bud battery',exact:true});
+  const right=page.getByRole('group',{name:'Right bud battery',exact:true});
+  const chargingCase=page.getByRole('group',{name:'Case battery',exact:true});
+  await expect(chargingCase).toContainText('70%');
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('test-battery-push',{detail:[1,2,2,128|60,3,0]})));
+  await expect(right).toContainText('60%');
+  await expect(right).toContainText('Charging');
+  await expect(left).toContainText('90%');
+  await expect(chargingCase).toContainText('Not reported');
+  await expect(chargingCase).not.toContainText('0%');
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('test-battery-push',{detail:[1,1,3,55]})));
+  await expect(chargingCase).toContainText('55%');
+  await page.getByRole('button',{name:'Refresh battery levels',exact:true}).click();
+  await expect(chargingCase).toContainText('70%');
+  await expect(right).toContainText('85%');
+  await expect(right).not.toContainText('Charging');
+});

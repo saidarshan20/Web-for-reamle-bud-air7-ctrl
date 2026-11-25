@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { toast } from 'sonner';
+import { parseBattery, type BatteryValues } from '@/lib/battery';
 import { AIR7_ID, AIR7_FEATURES, isStrength, supports, encodePacket, PacketReader, parseGestures, gestureValue, editGestures, type Gesture, type GestureEntry, type Packet, parseCustomEQ, saveCustomEQ, createCustomEQ, compatibleEQ, presetName, encodeEQName, eqFingerprint, sameEQPresets, CUSTOM_EQ_LIMIT, type CustomPreset } from '@/lib/air7';
 
 export interface LogEntry { time: string; message: string; type: 'rx' | 'tx' | 'err' | 'info' }
@@ -15,8 +16,9 @@ export interface DeviceState {
   bassIntensity: number; bassReady: boolean; customEQ: number[]; customEQFrequencies: number[]; customEQReady: boolean;
   customPresets: CustomPreset[];
   touch: TouchState; volEnhancer: boolean; volReady: boolean;
-  battery: { left: number; right: number; case: number };
-  charging: { left: number; right: number; case: number };
+  battery: BatteryValues;
+  charging: BatteryValues;
+  batteryRefreshing: boolean;
 }
 const initialState: DeviceState = {
   connected: false, loading: false, reconnecting: false, busy: false,
@@ -26,7 +28,7 @@ const initialState: DeviceState = {
   customPresets: [],
   touch: { leftDouble: null, leftTriple: null, leftHold: null, rightDouble: null, rightTriple: null, rightHold: null },
   volEnhancer: false, volReady: false,
-  battery: { left: -1, right: -1, case: -1 }, charging: { left: -1, right: -1, case: -1 },
+  battery: { left: -1, right: -1, case: -1 }, charging: { left: -1, right: -1, case: -1 }, batteryRefreshing: false,
 };
 interface SerialPort {
   readable: ReadableStream<Uint8Array> | null;
@@ -54,6 +56,8 @@ export function useSerial() {
   const reconnectingRef = useRef(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
   const reconnect = useRef<() => Promise<void>>();
+  const batteryRequest = useRef<{ port: SerialPort; promise: Promise<void> } | null>(null);
+  const refreshOnWear = useRef<() => void>();
   const update = useCallback((patch: Partial<DeviceState>) => {
     stateRef.current = { ...stateRef.current, ...patch };
     if (active.current) setState(stateRef.current);
@@ -102,13 +106,10 @@ export function useSerial() {
     }
     if (command === 0x0204 && p[0] === 5 && p.length === 2) update({ features: { ...stateRef.current.features, 6: p[1] } });
     if (command === 0x0204 && p[0] === 1 && p[1] > 0 && p.length === 2 + p[1] * 2) {
-      const battery = { ...stateRef.current.battery }, charging = { ...stateRef.current.charging };
-      for (let i=2;i<p.length;i+=2) {
-        const key = ({1:'left',2:'right',3:'case'} as const)[p[i]];
-        if (key) { const value = p[i+1] & 127; battery[key] = value > 0 && value <= 100 ? value : -1; charging[key] = p[i+1] >> 7; }
-      }
-      update({ battery, charging });
+      update(parseBattery(p, stateRef.current));
     }
+    // Opening/closing the lid can trigger a wear event without a battery push.
+    if (command === 0x0204 && p[0] === 2 && p[1] > 0 && p.length === 2 + p[1] * 2) refreshOnWear.current?.();
   }, [log, update]);
   const readLoop = useCallback(async (port: SerialPort) => {
     const framer = new PacketReader();
@@ -130,6 +131,29 @@ export function useSerial() {
       }
     }
   }, [cancelPending, decode, log, update]);
+  const readBattery = useCallback((): Promise<void> => {
+    const port = portRef.current;
+    if (!port || !stateRef.current.connected) return Promise.reject(new Error('Connect first'));
+    if (batteryRequest.current?.port === port) return batteryRequest.current.promise;
+    update({ batteryRefreshing: true });
+    const promise = (async () => {
+      try {
+        const payload = await request(0x0106);
+        if (active.current && port === portRef.current && stateRef.current.connected) update(parseBattery(payload));
+      } finally {
+        if (batteryRequest.current?.promise === promise) {
+          batteryRequest.current = null;
+          if (active.current && port === portRef.current) update({ batteryRefreshing: false });
+        }
+      }
+    })();
+    batteryRequest.current = { port, promise };
+    return promise;
+  }, [request, update]);
+  const refreshBattery = useCallback(async () => {
+    try { await readBattery(); }
+    catch (e) { const message = errorText(e); log(message, 'err'); toast.error('Could not refresh battery: ' + message); }
+  }, [readBattery, log]);
   const readANC = useCallback(async () => {
     const p = await request(0x010c, [1,1]);
     if (p.length < 4 || p[1] !== 1 || p[2] !== 1 || p.length > 7) throw new Error('Invalid noise control reply');
@@ -175,13 +199,7 @@ export function useSerial() {
         if (selected.length && supports(bitmap,0x0205)) await request(0x0205,[selected.length,...selected]);
         else for (const c of selected) await request(0x0201,[c]);
       });
-      await optional(async () => {
-        const p = await request(0x0106);
-        if (p.length !== 2 + p[1] * 2) throw new Error('Invalid battery reply');
-        const battery = { ...initialState.battery }, charging = { ...initialState.charging };
-        for(let i=2;i<p.length;i+=2) { const key = ({1:'left',2:'right',3:'case'} as const)[p[i]]; if(key) { const value=p[i+1]&127; battery[key]=value>0 && value<=100?value:-1; charging[key]=p[i+1]>>7; } }
-        update({battery,charging});
-      });
+      await optional(readBattery);
       if(supports(bitmap,0x010c)) await optional(readANC);
       await optional(readFeatures);
       if(supports(bitmap,0x010f)) await optional(readEQ);
@@ -190,7 +208,7 @@ export function useSerial() {
       // Air 7 has three dynamic sound bands; the original single-band slider is disabled.
       log('State synchronization finished; unavailable controls remain disabled.');
     } finally { update({ loading: false }); }
-  }, [log, readANC, readEQ, readFeatures, readTouch, readCustomEQ, request, update]);
+  }, [log, readBattery, readANC, readEQ, readFeatures, readTouch, readCustomEQ, request, update]);
   const open = useCallback(async (port: SerialPort) => {
     await port.open({ baudRate:115200 }); portRef.current = port; gestures.current = [];
     update({ ...initialState, connected:true, loading:true });
@@ -245,6 +263,23 @@ export function useSerial() {
       if(port) void writeQueue.current.catch(()=>{}).then(async()=> { try { await port.close(); } catch { /* disconnected */ } });
     };
   }, [cancelPending]);
+  useEffect(() => {
+    if (!state.connected || !state.air7 || state.loading) return;
+    const refresh = () => {
+      if (document.visibilityState === 'hidden' || stateRef.current.busy || !stateRef.current.connected) return;
+      void readBattery().catch(e => log('Battery refresh: ' + errorText(e), 'err'));
+    };
+    refreshOnWear.current = refresh;
+    const timer = setInterval(refresh, 30_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      refreshOnWear.current = undefined;
+      clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [state.connected, state.air7, state.loading, readBattery, log]);
   const operation = useCallback(async (label: string, job: () => Promise<void>, successMessage?:string) => {
     if(locked.current) return false;
     locked.current=true; update({busy:true});
@@ -354,6 +389,6 @@ export function useSerial() {
     if(!sameEQPresets(before.filter(p=>p.id!==target.id),reported)) throw new Error('Deletion was not fully confirmed; the device preset list has been reloaded');
   },'Custom EQ deleted'),[operation,readCustomEQ,readEQ,writeCustomEQ]);
   const unavailable = useCallback(async () => { toast.error('Command layout is not verified for standard Buds Air 7'); return false; }, []);
-  return { state, logs, connect, setANC, setANCStrength, setEQ, setSys, applyTouch,
+  return { state, logs, connect, refreshBattery, setANC, setANCStrength, setEQ, setSys, applyTouch,
     setVolEnhancer: unavailable, setDynamicBassIntensity: unavailable, saveNamedCustomEQ, selectCustomEQ, deleteCustomEQ };
 }

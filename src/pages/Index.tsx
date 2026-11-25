@@ -4,6 +4,7 @@ import { useSerial } from '@/hooks/useSerial';
 import { LandingHero } from '@/components/LandingHero';
 import { HeaderBar } from '@/components/HeaderBar';
 import { DashboardBuds } from '@/components/DashboardBuds';
+import { BatteryStatus } from '@/components/BatteryStatus';
 import { NoiseControlCard } from '@/components/NoiseControlCard';
 import { EQPresetCard } from '@/components/EQPresetCard';
 import { SystemFeaturesCard } from '@/components/SystemFeaturesCard';
@@ -34,6 +35,7 @@ const Index = () => {
     state,
     logs,
     connect,
+    refreshBattery,
     setANC,
     setANCStrength,
     setEQ,
@@ -89,10 +91,12 @@ const Index = () => {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5 }}
           >
-            <HeaderBar connected={state.connected} reconnecting={state.reconnecting} onConnect={handleConnect} deviceName={state.deviceName} battery={state.battery} />
+            <HeaderBar connected={state.connected} reconnecting={state.reconnecting} onConnect={handleConnect} deviceName={state.deviceName} />
 
             {/* Reactive floating earbuds */}
             <DashboardBuds state={state} />
+
+            <BatteryStatus connected={state.connected} battery={state.battery} charging={state.charging} refreshing={state.batteryRefreshing} disabled={!state.connected || state.loading || state.busy || !state.air7} onRefresh={refreshBattery} />
 
             <div className="w-full max-w-[960px] mx-auto px-4 grid grid-cols-1 md:grid-cols-2 gap-5">
               <div className="contents md:flex md:flex-col md:gap-5">

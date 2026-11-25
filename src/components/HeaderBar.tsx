@@ -5,10 +5,9 @@ interface HeaderBarProps {
   connected: boolean;
   reconnecting?: boolean;
   onConnect: () => void;
-  battery?: { left: number; right: number; case: number };
 }
 
-export function HeaderBar({ connected, reconnecting, onConnect, battery, deviceName }: HeaderBarProps) {
+export function HeaderBar({ connected, reconnecting, onConnect, deviceName }: HeaderBarProps) {
   return (
     <motion.header
       initial={{ opacity: 0, y: -24 }}
